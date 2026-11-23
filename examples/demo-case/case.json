@@ -1,0 +1,52 @@
+{
+  "case_id": "demo-lit-tracking-001",
+  "subscription": {
+    "name": "NLRP3 inflammasome in atherosclerosis",
+    "query": "\"NLRP3\" AND \"atherosclerosis\" AND (inflammasome OR IL-1beta)",
+    "sources": ["crossref", "europepmc", "preprint"],
+    "alert_rules": {
+      "max_items": 5,
+      "include_updates": true,
+      "include_retractions": true
+    }
+  },
+  "window": {
+    "start": "2026-11-01",
+    "end": "2026-11-15",
+    "timezone": "Asia/Shanghai"
+  },
+  "previous_snapshot": {
+    "watermark": "2026-10-31",
+    "keys": [
+      "doi:10.1016/j.demo.2026.100001",
+      "title:il1signallinginplaquemacrophages|2026"
+    ],
+    "records": [
+      {
+        "title": "NLRP3 inflammasome activation in atherosclerotic plaques",
+        "doi": "10.1016/j.demo.2026.100001",
+        "journal": "Journal of Demo Cardiology",
+        "year": 2026,
+        "first_indexed": "2026-10-20"
+      },
+      {
+        "title": "IL-1β signalling in plaque macrophages",
+        "journal": "Journal of Demo Cardiology",
+        "year": 2026,
+        "first_indexed": "2026-10-25"
+      }
+    ]
+  },
+  "output_contract": {
+    "case_id": "string; must equal the case.json case_id",
+    "status": "success|partial|insufficient_input|failed",
+    "records": "list of newly discovered items",
+    "changes": "list of version updates",
+    "withdrawn": "list of retraction notices",
+    "alerts": "deterministically ordered alert list",
+    "refs": "evidence records with file and pointer/line",
+    "state": "next snapshot with keys and watermark",
+    "summary": "short human-readable summary",
+    "notes": "uncertainties and limitations"
+  }
+}
