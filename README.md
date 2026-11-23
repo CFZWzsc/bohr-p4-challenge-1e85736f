@@ -3,33 +3,47 @@
 Bohrium Playground Period 4 submission — challenge `challenge-1e85736f` (track: `literature-search`).
 
 This repository holds the complete skill package for the challenge: the skill
-definition, its executable entry point and all supporting scripts. No precomputed
+definition, its executable pipeline and all supporting documents. No precomputed
 answers, private data or credentials are included.
 
 ## Skill
 
 - Name: `incremental-literature-alerting`
-- Summary: Use when a research task needs a repeatable literature-tracking loop over fixed time windows: snapshot watermarks, incremental new-item diffing, dedup and version merging, retraction/correction handling, suppressible alerts, and an idempotently replayable result.json that preserves case_id and output_contract fields.
+- Summary: 当任务要求对固定时间窗做最新文献发现与增量追踪时使用：解析订阅与窗口、递归读取 Crossref/EuropePMC/DataCite/XML/JSONL/CSV 记录、按 DOI→PMID→arXiv→标题+年份去重、合并预印本/正式版/修订版本链、与上一次快照差分出新文献/版本更新/撤稿/已见/窗外/索引滞后、按规则抑制提醒，并输出可幂等回放且完整覆盖运行时 output_contract 的 result.json 与证据索引。
 
 ## Contents
 
 | File |
 |------|
 | `SKILL.md` |
+| `assets/policy.json` |
+| `examples/demo-case/case.json` |
+| `examples/demo-case/crossref.json` |
+| `examples/demo-case/europepmc.jsonl` |
+| `examples/demo-case/expected.json` |
+| `examples/demo-case/preprint.json` |
+| `examples/quickstart.md` |
+| `references/dedup-and-versioning.md` |
+| `references/evidence-and-replay.md` |
+| `references/failure-modes.md` |
+| `references/tracking-protocol.md` |
 | `scripts/run_skill.py` |
+| `scripts/sk_entry.py` |
 | `README.md` |
 
 ## How to run
 
 ```bash
-python scripts/run_skill.py --case /input/case.json --output /app/output/result.json
+python scripts/sk_entry.py --input /input --work /app/work --out /app/output
 ```
 
-The entry point is `SKILL.md`; input/output contracts, error handling and a minimal
-usage example are documented there.
+Two passes are intended: the first writes `/app/work/agent_tasks.json` (evidence
+skeleton) and `/app/output/result.json`; after the agent writes
+`/app/work/agent_judgement.json`, the second pass merges and validates the result.
+See `SKILL.md` and `references/two-phase-workflow.md`.
 
 ## Notes
 
 - Pure Python standard library; no network access required.
-- The result JSON keeps the input case id, the main results, per-item evidence,
-  a run status and an uncertainty section.
+- Every claim is anchored to paragraph-level evidence; unknown items are reported
+  in `uncertainty` instead of being fabricated.
