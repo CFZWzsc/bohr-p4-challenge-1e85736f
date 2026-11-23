@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "skill": "incremental-literature-alerting",
+  "dedup_priority": ["doi", "pmid", "arxiv", "normalized_title_year"],
+  "alert_caps": {
+    "max_items": 25,
+    "include_updates": true,
+    "include_retractions": true
+  },
+  "window": {
+    "end_inclusive": true,
+    "date_only_end_extends_to_end_of_day": true,
+    "late_indexed_policy": "suppress_from_alerts",
+    "missing_date_policy": "keep_with_uncertainty"
+  },
+  "limits": {
+    "max_file_bytes": 8388608,
+    "max_total_bytes": 67108864,
+    "max_files": 300,
+    "max_records": 20000,
+    "max_output_items": 2000,
+    "max_snapshot_records": 5000,
+    "max_evidence_per_item": 12,
+    "max_suppressed": 1000
+  },
+  "rules": {
+    "no_network": true,
+    "no_fabrication": true,
+    "deterministic_output": true,
+    "preserve_case_id": true,
+    "preserve_unknown_contract_keys": true,
+    "retraction_beats_update": true,
+    "duplicates_suppressed": true,
+    "out_of_window_suppressed": true,
+    "already_seen_suppressed": true
+  },
+  "status_values": ["success", "partial", "insufficient_input", "failed"],
+  "statement": "本 Skill 只对输入文件中真实出现的记录做归一化、去重、版本合并与快照差分；不联网、不补造记录、不推断缺失日期。无法判断的内容写入 uncertainty，并据实选择 status。"
+}
