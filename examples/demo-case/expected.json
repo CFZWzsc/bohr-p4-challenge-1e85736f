@@ -1,0 +1,39 @@
+{
+  "case_id": "demo-lit-tracking-001",
+  "status": "success",
+  "counts": {
+    "new_items": 2,
+    "updates": 1,
+    "retractions": 1,
+    "already_seen": 0,
+    "out_of_window": 0,
+    "late_indexed": 0,
+    "duplicates": 1,
+    "alerts": 4
+  },
+  "contract_keys": [
+    "case_id",
+    "status",
+    "records",
+    "changes",
+    "withdrawn",
+    "alerts",
+    "refs",
+    "state",
+    "summary",
+    "notes"
+  ],
+  "snapshot": {
+    "previous_keys_at_least": 2,
+    "next_keys_greater_than_previous": true,
+    "advanced": true
+  },
+  "checks": [
+    "records maps to new_items and is non-empty",
+    "the duplicate DOI variant is merged into one item with one duplicate group",
+    "the retraction notice is classified as withdrawn/retractions",
+    "the version 2 record is classified as changes/updates",
+    "every alert and item carries evidence locators",
+    "feeding next_snapshot back as previous_snapshot yields zero new items and zero alerts"
+  ]
+}
