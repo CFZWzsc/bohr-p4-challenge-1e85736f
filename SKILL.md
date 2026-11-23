@@ -1,124 +1,163 @@
 ---
 name: incremental-literature-alerting
-description: Use when a research task needs a repeatable literature-tracking loop over fixed time windows: snapshot watermarks, incremental new-item diffing, dedup and version merging, retraction/correction handling, suppressible alerts, and an idempotently replayable result.json that preserves case_id and output_contract fields.
+description: 当任务要求对固定时间窗做最新文献发现与增量追踪时使用：解析订阅与窗口、递归读取 Crossref/EuropePMC/DataCite/XML/JSONL/CSV 记录、按 DOI→PMID→arXiv→标题+年份去重、合并预印本/正式版/修订版本链、与上一次快照差分出新文献/版本更新/撤稿/已见/窗外/索引滞后、按规则抑制提醒，并输出可幂等回放且完整覆盖运行时 output_contract 的 result.json 与证据索引。
 ---
 
 # 最新文献发现与增量追踪
 
-## 用途与适用条件
+## 1. 用途与适用条件
 
-当任务要求持续跟踪某一主题的新论文、版本更新或撤稿更正，并且必须说明"相对上一次快照新增了什么"时使用。交付物是一条可按时重放、幂等、去重受控的追踪链路，而不是一次性主题检索结果。
+本 Skill 用于**按时间窗增量跟踪一个文献订阅**：告诉你相对上一次快照，这一窗口里出现了哪些新论文、版本更新、撤稿或更正，以及哪些条目因重复、已见、窗外或索引滞后而不该提醒。
 
-**适用前提**：输入真实提供当前窗口的检索结果，以及（理想情况下）上一次快照或水位、窗口起止时间。缺少快照时仍会运行，但只能作为基线，且会明确标注 `partial`。
+适用条件：
 
-**不适用**：全文阅读、自动写综述、未经授权的定时抓取、把提醒内容当作科学结论。本 Skill 不联网、不启动调度器，时间窗与来源由输入给定。
+- 输入提供当前窗口的来源记录（Crossref / Europe PMC / DataCite / 通用 REST 导出 / JSONL / CSV / XML 均可）；
+- 理想情况下还提供上一次快照（键集合、记录或水位）与窗口起止；
+- 需要"本轮相对上轮新增了什么"的可复核结论，而不是一次性主题检索列表。
 
-## 输入
+不适用：全文精读、自动写综述、定时抓取、把提醒条目当作科学结论。本 Skill **不联网**，窗口与来源全部来自输入。
+
+## 2. 输入
 
 | 输入 | 说明 |
 |---|---|
-| `/input/case.json` | 必读。常见结构：`window`（`start`/`end`/`timezone`，或 `window_start`/`window_end`）、`previous_snapshot`/`snapshot`（记录数组或去重键数组，可带 `watermark`）、`records`/`results`/`items`（当前窗口结果）、`alert_rules`（`max_items`、`include_updates`、`include_retractions`）。实际键名以文件为准。 |
-| `task.md` | 可选，存在时读取用于核对订阅主题、窗口与提醒要求。 |
+| `/input/case.json` | 主描述文件，常见键：`case_id`、`subscription`（含 `query`/`sources`/`alert_rules`）、`window`（`start`/`end`/`timezone`）、`previous_snapshot`（`keys`/`records`/`watermark`）、`output_contract`。键名以实际文件为准。 |
+| `/input/task.md` | 可选，用于核对订阅主题、窗口与提醒预算。 |
+| 其他来源文件 | 递归扫描 `.json`、`.jsonl`、`.ndjson`、`.xml`、`.txt`、`.csv`、`.tsv`；支持 Crossref `message.items`、Europe PMC `resultList.result`、DataCite `data[].attributes`、OAI/XML 记录节点，以及 JSONL 每行一条记录。 |
+| `--input` | 输入目录或 `case.json` 路径，默认 `/input`。 |
 | `--work` | 工作目录，默认 `/app/work`。 |
+| `--out` | 输出目录或 `*.json` 路径，默认 `/app/output`。 |
 
-记录字段识别：标题、DOI、PMID、arXiv、作者、期刊、日期（`first_indexed`/`entry_date`/`published`/`date`/`issued`）、`version`、`retracted`、`update_type`、`source`。
+识别字段：标题、DOI、PMID、arXiv、作者、期刊、`version`、`first_indexed`/`entry_date`/`indexed`/`created`、`published`/`issued`/`date`、`retracted`/`withdrawn`、`update_type`/`correction`、`relation`/`related_identifiers`。
 
-## 处理流程（对应评分维度）
+## 3. 调用方式
 
-1. **读取订阅与窗口**（任务完成度）：解析 `start`/`end`，保留 `timezone` 标签；窗口缺失时不禁用记录，但把"窗口不完整"写入 `uncertainty`。
-2. **去重**（结果正确性）：按 `DOI → PMID → arXiv → 归一化标题+年份` 生成 `dedup_key`；同一键的多条来源合并为一个条目，保留全部 `source_locators` 与来源集合，日期取最晚值。
-3. **快照比对**（正确性/可回溯性）：把上一次快照的键与标题+年份集合作为水位；当前记录逐条判定 → `new_items`（快照中没有）、`updates`（已存在但出现版本/更新标记）、`already_seen`（已存在且无变化）、`retractions`（撤稿标记）、`out_of_window`。
-4. **时间窗边界**（完整性）：日期早于 `start` 或晚于 `end` 的条目不进入提醒，单独列在 `out_of_window`，不静默丢弃；无日期记录保留并标注。
-5. **提醒抑制**（可靠体验）：先撤稿、再版本更新、后新文献排序；重复项与窗外项一律抑制；超过 `max_items` 的条目进入 `suppressed` 并注明原因。每条提醒保留 `kind`、`priority`、`reason`。
-6. **幂等与水位推进**（创新增益）：输出 `next_snapshot.keys`（旧键 ∪ 当前键）与 `watermark`；同一输入重复运行得到同一分类，因为不原地改写历史快照。
-
-## 输出契约
-
-写入 `--out`（默认 `/app/output/result.json`）。顶层字段：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `case_id` | string | 原样保留输入 `case_id` |
-| `status` | string | `success` / `partial` / `insufficient_input` / `failed` |
-| `result` | object | `new_items`、`updates`、`retractions`、`already_seen`、`out_of_window`、`alerts`、`suppressed`、`alert_rules`、`window`、`snapshot`、`next_snapshot`、`replay`、`limitations`、`change_log` |
-| `new_items` / `alerts` | array | 顶层镜像，便于契约字段直接读取 |
-| `evidence` | array | 窗口、快照、当前记录、提醒的来源定位 |
-| `uncertainty` | array | 空窗口、缺快照、缺日期、时区、索引滞后 |
-| `errors` | array | 运行错误；正常为空 |
-| `stats` | object | 当前记录数、新增、更新、撤稿、窗外、提醒与抑制数 |
-| `contract_notes` | object | 未产出契约字段说明 |
-| `output_contract_fields` | object | `provided` 与 `present` |
-
-输入 `output_contract` 的每个字段名都会出现在顶层；无法产出时写 `null` 并在 `contract_notes` 说明。
-
-`status`：无当前记录且无历史快照 → `insufficient_input`；缺快照或缺完整窗口 → `partial`；窗口与快照齐备 → `success`（即使窗口为空、提醒为 0，也是有效的"无新增"结论）；解析失败 → `failed`。
-
-## 异常处理
-
-| 情形 | 处理 | 输出标记 |
-|---|---|---|
-| 窗口为空（无新增） | 输出空 `new_items` 与空 `alerts`，不制造条目 | `status=success`，`stats.new_items=0` |
-| 无上一次快照 | 作为基线运行，所有窗内条目记为新增 | `status=partial`，`uncertainty.type=no_previous_snapshot` |
-| 缺窗口起止 | 不做窗外过滤，明确声明 | `uncertainty.type=window_incomplete` |
-| 记录缺日期 | 保留条目，不推断日期 | `uncertainty.type=missing_dates` |
-| 撤稿/更正 | 单独成类并优先提醒 | `retractions`，`alerts[].kind=retraction` |
-| 已见条目重复出现 | 抑制，不二次推送 | `suppressed` |
-| 提醒超预算 | 截断并逐条说明 | `suppressed[].reason` |
-| 来源失败 | 不编造记录，记录缺口 | `uncertainty` |
-| 输出目录不可写 | stderr 简短错误，退出码 3 | 无静默成功 |
-
-## 限制
-
-- 只在输入记录范围内做增量判定，不发起实时检索；索引延迟条目只能靠后续同窗口重跑补回。
-- 撤稿/更正依赖输入显式标记，不解析出版商公告。
-- 时区只作为标签保留，naive 时间戳不做隐含换算。
-- 标题+年份水位对同名不同文存在残余误判风险，已在 `uncertainty` 中说明。
-- 调度本身不在本 Skill 内，需外部按窗口调用。
-
-## 最小调用示例（示例，非正式案例结果）
+在 Skill 根目录执行：
 
 ```bash
-python /skills/weekly-skill/scripts/run_skill.py \
-  --case /input/case.json --out /app/output/result.json --work /app/work
+python scripts/sk_entry.py \
+  --input /input \
+  --work /app/work \
+  --out /app/output
 ```
 
-输入片段（示例）：
+`scripts/run_skill.py` 是等价薄封装，参数相同。执行后必须存在：
 
-```json
-{"case_id": "demo-003",
- "window": {"start": "2026-11-01", "end": "2026-11-15", "timezone": "Asia/Shanghai"},
- "previous_snapshot": {"watermark": "2026-10-31", "keys": ["doi:10.1/old"]},
- "records": [
-   {"title": "New NLRP3 study", "doi": "10.1/new", "first_indexed": "2026-11-03"},
-   {"title": "Old NLRP3 study", "doi": "10.1/old", "first_indexed": "2026-11-04"}
- ]}
-```
+- `/app/output/result.json` —— 固定字段 + 运行时契约字段齐全的最终结果；
+- `/app/output/run-review.md` —— 证据索引与不确定性清单（脚本先写一版，执行 Agent 复核后覆盖）。
 
-示意输出（示例，已截断）：
+## 4. 输出字段说明
 
-```json
-{"case_id": "demo-003", "status": "success",
- "new_items": [{"title": "New NLRP3 study", "reason": "not present in the previous snapshot"}],
- "alerts": [{"kind": "new_item", "priority": "normal", "title": "New NLRP3 study"}],
- "result": {"suppressed": [{"title": "Old NLRP3 study", "reason": "already present in the previous snapshot"}],
-            "snapshot": {"previous_keys": 1, "current_keys": 2, "next_keys": 2}}}
-```
+`result.json` 顶层始终包含：
 
-以上为接口示意，不代表任何官方固定案例结果。
+| 字段 | 含义 |
+|---|---|
+| `case_id` | 原样保留输入的 `case_id`；缺失时为空字符串 |
+| `status` | `success` / `partial` / `insufficient_input` / `failed` |
+| `status_reason` | 状态的可读理由 |
+| `summary` | 一句话摘要（新增/更新/撤稿/提醒数） |
+| `subscription` | 订阅查询、来源与提醒规则的回显 |
+| `window` | `start`/`end`/`timezone`/`complete`/`end_inclusive`/`locator` |
+| `new_items` | 快照中没有、窗口内的新条目 |
+| `updates` | 同一实体的版本更新/修订/更正 |
+| `retractions` | 撤稿声明或被撤稿条目 |
+| `already_seen` | 快照中已有且无变化 |
+| `out_of_window` | 不在快照中但日期落在窗口外 |
+| `late_indexed` | 出版早于窗口、索引落在窗口内（默认不提醒） |
+| `duplicates` | 重复组：`dedup_key`、成员定位、来源 |
+| `alerts` | 排序后的提醒：`kind`、`priority`、`reason`、证据 |
+| `suppressed` | 被抑制的条目与原因 |
+| `evidence` | 窗口、快照、来源文件的全局证据 |
+| `snapshot` | 上一轮键数、当前键数、下一轮键数、水位、是否推进、记录数 |
+| `next_snapshot` | `{watermark, keys, records, window, generated_by, skill_version}`，可直接回填 |
+| `uncertainty` | 不确定项：`type`、`detail`、`resolution` |
+| `run_log` | 分步执行记录：发现输入、解析 case/窗口、读快照、收集、去重、连链、差分、提醒、写快照、契约、写输出 |
+| `stats` | 各分类计数与文件数 |
+| `contract` | `declared_keys`、`mapped`、`extras`、`all_present` |
+| `contract_extras` | 无法精确映射的契约键说明 |
+| `errors` | 解析/读取错误；正常为空 |
 
+`output_contract` 的每个键都会出现在顶层：先直接映射，再走别名（`records`→`new_items`、`changes`→`updates`、`withdrawn`→`retractions`、`seen`→`already_seen`、`missed`→`out_of_window`、`refs`→`evidence`、`state`→`snapshot`、`notes`→`uncertainty` 等），最后才尽力而为并在 `contract_extras` 说明。**绝不为填键编造记录。**
 
-## 交付保证与评分对齐
+## 5. 去重与版本链规则
 
-1. 在 Skill 安装目录执行：`cd /skills/weekly-skill && python scripts/run_skill.py --case /input/case.json --out /app/output/result.json --work /app/work`；路径不同时显式改 `--case` / `--out` / `--work`，不要假定相对路径可用。
-2. 必须产出**完整成品** `result.json`：当前窗口每条记录都出现在 `new_items` / `updates` / `retractions` / `already_seen` / `out_of_window` 之一，禁止 skeleton、`pending`、空占位或用流程说明代替结果。
-3. 脚本无法自动完成的实质判断（真实输入的增量归属核对、版本链与撤稿证据）由调用 Agent 依据实际记录补全并写回 `result.json`，不得编造任何条目或日期。
-4. 自检：`case_id` 与输入一致；`output_contract` 每个字段存在；`status` 取本契约值 `success` / `partial` / `insufficient_input` / `failed`（不得写 `completed`）；每条结论有来源定位；同输入重复运行分类一致。
-5. 输入缺失、JSON 损坏或字段异常时仍写出结构化结果并说明缺口，不崩溃、不静默成功。
+1. 去重键优先级：`doi` → `pmid` → `arxiv` → `归一化标题+年份`。
+2. 同一键的多条记录合并为一条：保留全部来源定位与全部标识符，日期取最晚索引日期。
+3. 版本链通过 `relation`/`related_identifiers`、归一化标题 + 作者交集 + 年份兼容、`version` 递增连接。
+4. 链上正式版优先于预印本；所有版本定位都保留，不丢弃预印本来源。
+5. 同一实体只提醒一次；版本变化进 `updates`，不重复进 `new_items`。
+6. 撤稿声明是独立实体，不与被撤稿论文合并，进 `retractions`。
 
-## 最终交付强制要求
+细则见 `references/dedup-and-versioning.md`。
 
-1. **调用 Agent 必须交付成品，不是流程说明**：脚本产出只是索引、核对或规格骨架；调用 Agent 必须在同一 `result.json` 中补齐本题要求的最终产物（正文/译文/审稿意见/综述/分析结论/图表源文件与导出件/幻灯片页内容与讲稿/实验方案等）。交付字段为空、只有标题骨架，或含 `pending`、`TODO` 之类占位，一律视为未完成。
-2. **必须覆盖全部输入条目**：输入中的每个章节、问题、文献、图、页面、指标都要有对应条目，不得只处理示例或首条；确实缺失的条目写入 `uncertainty` / `limitations` 并说明原因，不得静默跳过。
-3. **必须自检后再交付**：`case_id` 与输入一致；`output_contract` 每个字段都存在；状态值取本题契约规定的枚举；数字、单位、引用、来源可逐条回溯；结果内部无自相矛盾。
-4. **参数等价**：`python scripts/run_skill.py --case <输入> --out <输出>` 与 `--output <输出>` 等价；默认 `/input/case.json` → `/app/output/result.json`。
-5. **平台用 3 个固定案例分别运行**：逻辑要由输入驱动，不针对某一份示例硬编码；字段命名差异走别名匹配与显式降级，并在 `uncertainty` 记录假设。
+## 6. 提醒抑制规则
+
+排序：`retraction`（high）→ `version_update`（medium）→ `new_item`（normal）。
+
+以下条目不进入 `alerts`，但保留在结果中并写入 `suppressed` 及原因：
+
+- 重复组成员（`duplicate`）；
+- `already_seen`；
+- `out_of_window`；
+- `late_indexed`（默认策略，可在 `assets/policy.json` 调整）；
+- 超过 `alert_rules.max_items` 的条目（默认 25，取输入中的值优先）。
+
+每条提醒带 `kind`、`priority`、`reason` 与证据定位。
+
+## 7. 幂等回放步骤
+
+1. 首次运行，得到 `/app/output/result.json`；
+2. 读取其中的 `next_snapshot`；
+3. 复制输入目录，把 `case.json` 的 `previous_snapshot` 替换为该 `next_snapshot`；
+4. 对副本再次运行；
+5. 期望：`status=success`、`new_items=0`、`updates=0`、`retractions=0`、`alerts=0`，`already_seen` 等于上轮条目数，快照键数不减少。
+
+完整命令见 `examples/quickstart.md`。
+
+## 8. 异常处理
+
+| 情形 | 处理 |
+|---|---|
+| 空窗口（无新增） | 输出空 `new_items`/`alerts`，`status=success`，不制造条目 |
+| 限流 / 来源抓取不完整 | 只处理已落盘记录，`status` 不高于 `partial`，`uncertainty` 说明覆盖缺口 |
+| 来源改版（字段改名/嵌套变化） | 走别名与嵌套探测；仍读不到则写 `errors` 与 `uncertainty`，指出文件与字段 |
+| 日期缺失 | 保留记录，不推断日期；写入 `uncertainty` |
+| 时区缺失 | 按墙上时间比较，不猜测；`window.timezone=null` |
+| 撤稿/更正 | 单独成类并优先提醒 |
+| 无 `case.json` / JSON 损坏 | 退出码 0，`status=insufficient_input`，`errors` + `uncertainty` 记录原因 |
+| 输出目录不可写 | stderr 报错，非 0 退出，不静默成功 |
+
+## 9. 交付前自检清单
+
+- [ ] 入口退出码为 0；
+- [ ] `result.json` 可解析，含本文件第 4 节全部固定字段；
+- [ ] `case_id` 与输入一致；
+- [ ] `output_contract` 每个键存在，`contract.all_present=true`；
+- [ ] `status` 取 `success`/`partial`/`insufficient_input`/`failed` 之一；
+- [ ] 每条 `new_items`/`updates`/`retractions`/`already_seen`/`out_of_window`/`late_indexed` 都有 `evidence`；
+- [ ] 计数与 `stats` 一致，无自检失败项；
+- [ ] 重复组已合并，撤稿与版本更新分类正确；
+- [ ] `snapshot.advanced` 为 `true`（非回放场景）；
+- [ ] 回放测试 `new_items=0`、`alerts=0`；
+- [ ] 空/损坏输入退出码 0 且状态诚实。
+
+## 10. 执行 Agent 的职责（必读）
+
+脚本只做确定性的读取、归一化、去重、差分与写盘；**它不判断"这条记录是否真的属于该订阅主题"**，也不负责最终交付说明。执行 Agent 必须：
+
+1. 运行入口，得到 `/app/output/result.json`；
+2. 逐类读取 `new_items`、`updates`、`retractions`、`already_seen`、`out_of_window`、`late_indexed`、`duplicates`、`alerts`、`suppressed`；
+3. 对照每条目的 `evidence`（文件 + JSON Pointer / 行号 / XPath / CSV 行）**逐条回到源文件核对**标题、DOI、日期与撤稿/版本标记；
+4. 复核计数与 `stats`、`snapshot` 是否自洽；发现不一致时修正输入分析或代码，不得手改结果掩盖；
+5. 用核对后的事实覆盖 `/app/output/run-review.md`，写清：运行命令、各分类计数、逐条证据定位、未解决问题；
+6. **不编造**：源文件没有的条目、日期、撤稿标记一律不写；拿不准的写入 `uncertainty` 并在复核文件中标注；
+7. 不提交、不上传、不写入任何 token。
+
+## 11. 参考
+
+- `references/tracking-protocol.md` —— 窗口、快照、六分类与水位
+- `references/dedup-and-versioning.md` —— 去重键与版本链
+- `references/evidence-and-replay.md` —— 证据定位、契约映射、幂等回放
+- `references/failure-modes.md` —— 失败模式与退路
+- `assets/policy.json` —— 去重优先级、提醒预算、窗口规则与限制
+- `examples/quickstart.md` —— 可离线复现的 demo 与校验片段
