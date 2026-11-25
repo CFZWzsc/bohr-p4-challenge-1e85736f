@@ -1,39 +1,23 @@
 {
-  "case_id": "demo-lit-tracking-001",
+  "note": "Synthetic expectation for the bundled demo only; not an official answer.",
+  "case_id": "demo-incremental-tracking-002",
   "status": "success",
   "counts": {
-    "new_items": 2,
+    "new_items": 1,
     "updates": 1,
     "retractions": 1,
-    "already_seen": 0,
-    "out_of_window": 0,
-    "late_indexed": 0,
-    "duplicates": 1,
-    "alerts": 4
+    "already_seen": 1,
+    "alerts": 3
   },
-  "contract_keys": [
-    "case_id",
-    "status",
-    "records",
-    "changes",
-    "withdrawn",
-    "alerts",
-    "refs",
-    "state",
-    "summary",
-    "notes"
-  ],
-  "snapshot": {
-    "previous_keys_at_least": 2,
-    "next_keys_greater_than_previous": true,
-    "advanced": true
-  },
+  "contract_keys": ["incremental_state_json", "report_md", "provenance_json"],
+  "artifacts": ["incremental_state.json", "report.md", "provenance.json",
+                "records.csv", "search_ir.json", "validation.json"],
   "checks": [
-    "records maps to new_items and is non-empty",
-    "the duplicate DOI variant is merged into one item with one duplicate group",
-    "the retraction notice is classified as withdrawn/retractions",
-    "the version 2 record is classified as changes/updates",
-    "every alert and item carries evidence locators",
-    "feeding next_snapshot back as previous_snapshot yields zero new items and zero alerts"
+    "SN2 R3 is classified as a version update of R1 via the shared DOI",
+    "SN2 R5 is classified as a new item",
+    "SN2 R4 is classified as a retraction, not a new paper",
+    "SN2 R2 counts as already seen and is suppressed",
+    "both windows are contiguous, so no window issue is raised",
+    "report.md and provenance.json exist and every item carries a locator"
   ]
 }
