@@ -9,7 +9,7 @@ answers, private data or credentials are included.
 ## Skill
 
 - Name: `incremental-literature-alerting`
-- Summary: 当任务要求对固定时间窗做最新文献发现与增量追踪时使用：解析订阅与窗口、递归读取 Crossref/EuropePMC/DataCite/XML/JSONL/CSV 记录、按 DOI→PMID→arXiv→标题+年份去重、合并预印本/正式版/修订版本链、与上一次快照差分出新文献/版本更新/撤稿/已见/窗外/索引滞后、按规则抑制提醒，并输出可幂等回放且完整覆盖运行时 output_contract 的 result.json 与证据索引。
+- Summary: 对组织方本地导入快照做逐窗文献增量追踪：读取 case.json/task.md 与随附的 Crossref/EuropePMC/CSV/JSONL/XML 记录，按 DOI→arXiv→PMID→标题+年份归一化去重，比较相邻快照得出新增、预印本→正式版等版本更新与撤稿，审计窗口连续性并保留可回放水位，一次运行产出 incremental_state.json、report.md、provenance.json、records.csv 与契约齐全的 result.json；不联网、不声称实时或全球最新收录。
 
 ## Contents
 
@@ -18,10 +18,11 @@ answers, private data or credentials are included.
 | `SKILL.md` |
 | `assets/policy.json` |
 | `examples/demo-case/case.json` |
-| `examples/demo-case/crossref.json` |
-| `examples/demo-case/europepmc.jsonl` |
 | `examples/demo-case/expected.json` |
-| `examples/demo-case/preprint.json` |
+| `examples/demo-case/import_state_1.json` |
+| `examples/demo-case/import_state_2.json` |
+| `examples/demo-case/records.csv` |
+| `examples/demo-case/task.md` |
 | `examples/quickstart.md` |
 | `references/dedup-and-versioning.md` |
 | `references/evidence-and-replay.md` |
