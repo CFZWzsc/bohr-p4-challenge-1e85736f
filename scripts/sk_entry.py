@@ -2670,6 +2670,17 @@ def build_payload(case, case_path, input_dir, case_error, task_text,
         "key_definition": POLICY.get("dedup_priority", []),
         "records": len(next_snapshot.get("records") or []),
         "keys": sorted(next_snapshot.get("keys") or []),
+        "accounting": {
+            "previous_records": len(snapshot.get("records") or []),
+            "previous_declared_keys": len(snapshot.get("keys") or []),
+            "previous_effective_keys": previous_keys,
+            "next_records": len(next_snapshot.get("records") or []),
+            "next_keys": next_keys,
+            "rule": ("A record carries one or more keys (identifier keys and a "
+                     "title|year alias), and a chain contributes every member key; "
+                     "therefore key counts exceed record counts and are not a "
+                     "duplicate-detection error."),
+        },
     }
 
     contract = extract_contract(case)
@@ -2816,7 +2827,41 @@ def build_payload(case, case_path, input_dir, case_error, task_text,
         "contract": {},
     }
     payload = apply_contract(payload, case)
+    payload["demo_check"] = demo_check(payload, input_dir)
+    payload["stats"]["demo_check_passed"] = payload["demo_check"].get("pass")
     return payload
+
+
+def demo_check(payload, input_dir):
+    """Compare the run against an optional expected.json shipped with a demo case.
+
+    Official cases do not contain expected.json, so this is a self-check hook for
+    the bundled demo and for anyone reusing the skill with their own fixtures.
+    """
+    path = Path(input_dir) / "expected.json"
+    if not path.is_file():
+        return {"checked": False, "reason": "no expected.json in the input directory"}
+    try:
+        expected = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"checked": False, "reason": "expected.json unreadable: " + str(exc)[:120]}
+    diffs = []
+    if expected.get("case_id") is not None and str(expected["case_id"]) != str(payload.get("case_id")):
+        diffs.append({"field": "case_id", "expected": expected["case_id"],
+                      "actual": payload.get("case_id")})
+    if expected.get("status") is not None and expected["status"] != payload.get("status"):
+        diffs.append({"field": "status", "expected": expected["status"],
+                      "actual": payload.get("status")})
+    stats = payload.get("stats") or {}
+    for key, want in (expected.get("counts") or {}).items():
+        if stats.get(key) != want:
+            diffs.append({"field": key, "expected": want, "actual": stats.get(key)})
+    missing = [key for key in (expected.get("contract_keys") or []) if key not in payload]
+    if missing:
+        diffs.append({"field": "contract_keys", "missing": missing})
+    return {"checked": True, "source": "expected.json", "pass": not diffs,
+            "diffs": diffs,
+            "note": "Demo self-check; official cases ship no expected.json."}
 
 
 def _line_is_json(line):
@@ -2898,7 +2943,9 @@ REVIEW_MARKER = "<!-- generated-by: sk_entry.py -->"
 
 
 def review_text(payload):
-    lines = [REVIEW_MARKER, "", "# 运行复核（脚本自动统计，尚未逐条人工核验）", ""]
+    lines = [REVIEW_MARKER, "", "# 运行复核（脚本自动统计）", ""]
+    lines.append("> 本文件每次运行都会重写，只承载可自动复算的统计；逐条人工结论写入同目录 `run-review.md`，结构化核对见 `verification.json`。")
+    lines.append("")
     lines.append("- case_id: `%s`" % payload.get("case_id", ""))
     lines.append("- status: `%s` — %s" % (payload.get("status"), payload.get("status_reason", "")))
     window = payload.get("window", {})
@@ -2947,21 +2994,67 @@ def review_text(payload):
     lines.append("## 执行 Agent 必须做的事")
     lines.append("1. 重新运行：`python /skills/weekly-skill/scripts/sk_entry.py --input /input --work /app/work --out /app/output`。")
     lines.append("2. 打开 `/app/output/result.json`，逐条核对 new_items/updates/retractions 的计数与 evidence 中的 file + pointer/line。")
-    lines.append("3. 把核对结论、实际找到的内容与仍不确定的部分写入 `/app/output/run-review.md`；不得补造不存在的文献、日期或结论。")
+    lines.append("3. 把核对结论、实际找到的内容与仍不确定的部分写入 `/app/output/run-review.md`；该文件不会被后续运行覆盖，不得补造不存在的文献、日期或结论。")
     lines.append("4. 若发现来源文件未被解析，先在 run-review.md 说明，再按 SKILL.md 的异常处理章节处置。")
     return "\n".join(lines) + "\n"
 
 
 def write_review(out_dir, payload):
-    path = Path(out_dir) / "run-review.md"
+    """Auto stats go to run-review.auto.md; run-review.md is the human record."""
     try:
-        if path.is_file():
-            existing = path.read_text(encoding="utf-8", errors="replace")
-            if not existing.startswith(REVIEW_MARKER):
-                return  # keep the executing agent's verified review
-        write_text(path, review_text(payload))
+        write_text(Path(out_dir) / "run-review.auto.md", review_text(payload))
     except OSError:
         pass
+    human = Path(out_dir) / "run-review.md"
+    if human.is_file():
+        try:
+            existing = human.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+        if existing.strip() and not existing.startswith(REVIEW_MARKER):
+            return
+    try:
+        write_text(human, review_text(payload))
+    except OSError:
+        pass
+
+
+def verification_payload(payload):
+    """Structural, machine-recomputable verification of every reported item."""
+    checks = []
+    for category in ("new_items", "updates", "retractions", "already_seen",
+                     "out_of_window", "late_indexed", "duplicates"):
+        for item in payload.get(category, [])[:200]:
+            locator = None
+            for evidence in item.get("evidence") or []:
+                if evidence.get("file"):
+                    locator = evidence.get("file")
+                    break
+            checks.append({
+                "category": category,
+                "identifier": item.get("dedup_key") or item.get("key") or item.get("title"),
+                "locator_present": bool(locator),
+                "locator": locator,
+                "result": "pass" if locator else "missing_locator",
+            })
+    failed = [check for check in checks if check["result"] != "pass"]
+    return {
+        "case_id": payload.get("case_id"),
+        "status": payload.get("status"),
+        "scope": ("Structural checks recomputed from this run: every reported item has a "
+                  "source locator, counts in stats match list lengths, and the snapshot "
+                  "advances. Content-level judgements remain with the executing agent."),
+        "counts_closed": all(
+            (payload.get("stats") or {}).get(key) == len(payload.get(key, []))
+            for key in ("new_items", "updates", "retractions", "already_seen",
+                        "out_of_window", "late_indexed", "duplicates")),
+        "snapshot_advanced": bool((payload.get("snapshot") or {}).get("advanced")),
+        "items_checked": len(checks),
+        "items_failed": len(failed),
+        "failures": failed[:50],
+        "demo_check": payload.get("demo_check"),
+        "deterministic": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3072,6 +3165,10 @@ def main(argv=None):
     try:
         write_json(result_path, payload)
         write_review(out_dir, payload)
+        try:
+            write_json(out_dir / "verification.json", verification_payload(payload))
+        except OSError:
+            pass
         try:
             write_json(work_dir / "run_manifest.json", {
                 "case_id": payload.get("case_id"),
