@@ -913,6 +913,10 @@ def main(argv=None) -> int:
     if not case or not records:
         status = "insufficient_input"
         reason = "case.json or records missing from the provided material"
+    elif len(snapshots) < 2:
+        status = "partial"
+        reason = ("only one import state was provided: the baseline is recorded but "
+                  "no previous snapshot exists to diff against")
     elif failed_checks:
         status = "partial"
         reason = "unresolved items or window issues: " + ", ".join(
@@ -1114,6 +1118,28 @@ def main(argv=None) -> int:
                       "window audit, watermark replay",
         }],
     })
+
+    result["aspect_coverage"] = [
+        {"aspect": "incremental_query",
+         "status": "implemented" if snapshots else "not_available",
+         "output": f"{len(snapshots)} snapshots / {len(records)} records"},
+        {"aspect": "deduplication",
+         "status": "implemented",
+         "output": f"{len(state['duplicates'])} duplicate groups; {DEDUP_RULE}"},
+        {"aspect": "time_window",
+         "status": "implemented" if snapshots else "not_available",
+         "output": f"{len(issue_list)} window issues"},
+        {"aspect": "alerting",
+         "status": "implemented",
+         "output": f"{len(state['alerts'])} alerts; {len(state['suppressed'])} suppressed"},
+        {"aspect": "retry_and_backfill",
+         "status": "not_applicable_offline",
+         "output": "no network retry is attempted: the materials are organizer-local snapshots"},
+        {"aspect": "version_record",
+         "status": "implemented",
+         "output": f"{len(state['version_groups'])} version chains; watermark "
+                   f"{watermark['last_window_end']}"},
+    ]
 
     for key, alias in LEGACY_ALIASES.items():
         if key in result:
